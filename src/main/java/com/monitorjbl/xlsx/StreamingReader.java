@@ -3,6 +3,7 @@ package com.monitorjbl.xlsx;
 import com.monitorjbl.xlsx.exceptions.MissingSheetException;
 import com.monitorjbl.xlsx.exceptions.OpenException;
 import com.monitorjbl.xlsx.exceptions.ReadException;
+import com.monitorjbl.xlsx.sst.BufferedStringsTable;
 import com.monitorjbl.xlsx.impl.StreamingSheetReader;
 import com.monitorjbl.xlsx.impl.StreamingWorkbook;
 import com.monitorjbl.xlsx.impl.StreamingWorkbookReader;
@@ -14,15 +15,16 @@ import org.apache.poi.poifs.crypt.EncryptionInfo;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.util.StaxHelper;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
 import org.apache.poi.xssf.model.SharedStringsTable;
 import org.apache.poi.xssf.model.StylesTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import javax.xml.stream.XMLEventReader;
-import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -104,6 +106,7 @@ public class StreamingReader implements Iterable<Row>, AutoCloseable {
     private int rowCacheSize = 10;
     private int bufferSize = 1024;
     private int sheetIndex = 0;
+    private int sstCacheSize = -1;
     private String sheetName;
     private String password;
 
@@ -131,8 +134,19 @@ public class StreamingReader implements Iterable<Row>, AutoCloseable {
       return sheetName;
     }
 
+    /**
+     * @return The password to use to unlock this workbook
+     */
     public String getPassword() {
       return password;
+    }
+
+    /**
+     * @return The size of the shared string table cache. If less than 0, no
+     * cache will be used and the entire table will be loaded into memory.
+     */
+    public int getSstCacheSize() {
+      return sstCacheSize;
     }
 
     /**
@@ -209,6 +223,27 @@ public class StreamingReader implements Iterable<Row>, AutoCloseable {
      */
     public Builder password(String password) {
       this.password = password;
+      return this;
+    }
+
+    /**
+     * <h1>!!! This option is experimental !!!</h1>
+     *
+     * Set the size of the Shared Strings Table cache. This option exists to accommodate
+     * extremely large workbooks with millions of unique strings. Normally the SST is entirely
+     * loaded into memory, but with large workbooks with high cardinality (i.e., very few
+     * duplicate values) the SST may not fit entirely into memory.
+     * <p>
+     * By default, the entire SST *will* be loaded into memory. Setting a value greater than
+     * 0 for this option will only cache up to this many entries in memory. <strong>However</strong>,
+     * enabling this option at all will have some noticeable performance degredation as you are
+     * trading memory for disk space.
+     *
+     * @param sstCacheSize size of SST cache
+     * @return reference to current {@code Builder}
+     */
+    public Builder sstCacheSize(int sstCacheSize) {
+      this.sstCacheSize = sstCacheSize;
       return this;
     }
 
@@ -297,18 +332,36 @@ public class StreamingReader implements Iterable<Row>, AutoCloseable {
           pkg = OPCPackage.open(f);
         }
 
+        boolean use1904Dates = false;
         XSSFReader reader = new XSSFReader(pkg);
-        SharedStringsTable sst = reader.getSharedStringsTable();
-        StylesTable styles = reader.getStylesTable();
 
+        SharedStringsTable sst;
+        File sstCache = null;
+        if(sstCacheSize > 0) {
+          sstCache = Files.createTempFile("", "").toFile();
+          log.debug("Created sst cache file [" + sstCache.getAbsolutePath() + "]");
+          sst = BufferedStringsTable.getSharedStringsTable(sstCache, sstCacheSize, pkg);
+        } else {
+          sst = reader.getSharedStringsTable();
+        }
+
+        StylesTable styles = reader.getStylesTable();
+        NodeList workbookPr = searchForNodeList(document(reader.getWorkbookData()), "/workbook/workbookPr");
+        if (workbookPr.getLength() == 1) {
+          final Node date1904 = workbookPr.item(0).getAttributes().getNamedItem("date1904");
+          if (date1904 != null) {
+            use1904Dates = ("1".equals(date1904.getTextContent()));
+          }
+        }
         InputStream sheet = findSheet(reader);
         if(sheet == null) {
           throw new MissingSheetException("Unable to find sheet at index [" + sheetIndex + "]");
         }
 
-        XMLEventReader parser = XMLInputFactory.newInstance().createXMLEventReader(sheet);
+        XMLEventReader parser = StaxHelper.newXMLInputFactory().createXMLEventReader(sheet);
 
-        return new StreamingReader(new StreamingWorkbookReader(pkg, new StreamingSheetReader(sst, styles, parser, rowCacheSize), this));
+        return new StreamingReader(new StreamingWorkbookReader(sst, sstCache, pkg, new StreamingSheetReader(sst, styles, parser, use1904Dates, rowCacheSize),
+            this));
       } catch(IOException e) {
         throw new OpenException("Failed to open file", e);
       } catch(OpenXML4JException | XMLStreamException e) {

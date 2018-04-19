@@ -3,6 +3,7 @@ package com.monitorjbl.xlsx.impl;
 import com.monitorjbl.xlsx.exceptions.NotSupportedException;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 
@@ -13,7 +14,7 @@ import java.util.TreeMap;
 public class StreamingRow implements Row {
   private int rowIndex;
   private boolean isHidden;
-  private Map<Integer, Cell> cellMap = new TreeMap<>();
+  private TreeMap<Integer, Cell> cellMap = new TreeMap<>();
 
   public StreamingRow(int rowIndex, boolean isHidden) {
     this.rowIndex = rowIndex;
@@ -24,7 +25,7 @@ public class StreamingRow implements Row {
     return cellMap;
   }
 
-  public void setCellMap(Map<Integer, Cell> cellMap) {
+  public void setCellMap(TreeMap<Integer, Cell> cellMap) {
     this.cellMap = cellMap;
   }
 
@@ -70,13 +71,13 @@ public class StreamingRow implements Row {
 
   /**
    * Gets the index of the last cell contained in this row <b>PLUS ONE</b>.
-   * 
+   *
    * @return short representing the last logical cell in the row <b>PLUS ONE</b>,
-   *   or -1 if the row does not contain any cells.
+   * or -1 if the row does not contain any cells.
    */
   @Override
   public short getLastCellNum() {
-    return (short) (cellMap.size() == 0 ? -1 : cellMap.size() + 1);
+    return (short) (cellMap.size() == 0 ? -1 : cellMap.lastEntry().getValue().getColumnIndex() + 1);
   }
 
   /**
@@ -87,6 +88,42 @@ public class StreamingRow implements Row {
   @Override
   public boolean getZeroHeight() {
     return isHidden;
+  }
+
+  /**
+   * Gets the number of defined cells (NOT number of cells in the actual row!).
+   * That is to say if only columns 0,4,5 have values then there would be 3.
+   *
+   * @return int representing the number of defined cells in the row.
+   */
+  @Override
+  public int getPhysicalNumberOfCells() {
+    return cellMap.size();
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public short getFirstCellNum() {
+    if(cellMap.size() == 0) {
+      return -1;
+    }
+    return cellMap.firstKey().shortValue();
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public Cell getCell(int cellnum, MissingCellPolicy policy) {
+    StreamingCell cell = (StreamingCell) cellMap.get(cellnum);
+    if(policy == MissingCellPolicy.CREATE_NULL_AS_BLANK) {
+      if(cell == null) { return new StreamingCell(cellnum, rowIndex, false); }
+    } else if(policy == MissingCellPolicy.RETURN_BLANK_AS_NULL) {
+      if(cell == null || cell.getCellTypeEnum() == CellType.BLANK) { return null; }
+    }
+    return cell;
   }
 
   /* Not supported */
@@ -111,6 +148,14 @@ public class StreamingRow implements Row {
    * Not supported
    */
   @Override
+  public Cell createCell(int i, CellType cellType) {
+    throw new NotSupportedException();
+  }
+
+  /**
+   * Not supported
+   */
+  @Override
   public void removeCell(Cell cell) {
     throw new NotSupportedException();
   }
@@ -120,30 +165,6 @@ public class StreamingRow implements Row {
    */
   @Override
   public void setRowNum(int rowNum) {
-    throw new NotSupportedException();
-  }
-
-  /**
-   * Not supported
-   */
-  @Override
-  public Cell getCell(int cellnum, MissingCellPolicy policy) {
-    throw new NotSupportedException();
-  }
-
-  /**
-   * Not supported
-   */
-  @Override
-  public short getFirstCellNum() {
-    throw new NotSupportedException();
-  }
-
-  /**
-   * Not supported
-   */
-  @Override
-  public int getPhysicalNumberOfCells() {
     throw new NotSupportedException();
   }
 

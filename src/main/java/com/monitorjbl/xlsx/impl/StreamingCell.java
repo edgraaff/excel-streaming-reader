@@ -5,47 +5,53 @@ import org.apache.poi.hssf.usermodel.HSSFDateUtil;
 import org.apache.poi.ss.formula.FormulaParseException;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Comment;
 import org.apache.poi.ss.usermodel.Hyperlink;
 import org.apache.poi.ss.usermodel.RichTextString;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.util.CellAddress;
 import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.xssf.usermodel.XSSFRichTextString;
 
 import java.util.Calendar;
 import java.util.Date;
 
 public class StreamingCell implements Cell {
 
+  private static final Supplier NULL_SUPPLIER = new Supplier() {
+    @Override
+    public Object getContent() {
+      return null;
+    }
+  };
+
   private static final String FALSE_AS_STRING = "0";
   private static final String TRUE_AS_STRING  = "1";
 
   private int columnIndex;
   private int rowIndex;
+  private final boolean use1904Dates;
 
-  private Object contents;
+  private Supplier contentsSupplier = NULL_SUPPLIER;
   private Object rawContents;
+  private String formula;
   private String numericFormat;
   private Short numericFormatIndex;
   private String type;
+  private String cachedFormulaResultType;
   private Row row;
   private CellStyle cellStyle;
 
-  public StreamingCell(int columnIndex, int rowIndex) {
+  public StreamingCell(int columnIndex, int rowIndex, boolean use1904Dates) {
     this.columnIndex = columnIndex;
     this.rowIndex = rowIndex;
+    this.use1904Dates = use1904Dates;
   }
 
-  public Object getContents() {
-    return contents;
-  }
-
-  public void setContents(Object contents) {
-    this.contents = contents;
-  }
-
-  public Object getRawContents() {
-    return rawContents;
+  public void setContentSupplier(Supplier contentsSupplier) {
+    this.contentsSupplier = contentsSupplier;
   }
 
   public void setRawContents(Object rawContents) {
@@ -68,11 +74,19 @@ public class StreamingCell implements Cell {
     this.numericFormatIndex = numericFormatIndex;
   }
 
+  public void setFormula(String formula) {
+    this.formula = formula;
+  }
+
   public String getType() {
     return type;
   }
 
   public void setType(String type) {
+    if("str".equals(type)) {
+      // this is a formula cell, cache the value's type
+      cachedFormulaResultType = this.type;
+    }
     this.type = type;
   }
 
@@ -119,32 +133,38 @@ public class StreamingCell implements Cell {
   }
 
   /**
-   * Return the cell type. Note that only the numeric, string, and blank types are
-   * currently supported.
+   * Return the cell type.
+   *
+   * Will return {@link CellType} in version 4.0 of POI.
+   * For forwards compatibility, do not hard-code cell type literals in your code.
    *
    * @return the cell type
-   * @throws UnsupportedOperationException Thrown if the type is not one supported by the streamer.
-   *                                       It may be possible to still read the value as a supported type
-   *                                       via {@code getStringCellValue()}, {@code getNumericCellValue},
-   *                                       or {@code getDateCellValue()}
-   * @see Cell#CELL_TYPE_BLANK
-   * @see Cell#CELL_TYPE_NUMERIC
-   * @see Cell#CELL_TYPE_STRING
    */
   @Override
   public int getCellType() {
-    if(contents == null || type == null) {
-      return CELL_TYPE_BLANK;
+    return getCellTypeEnum().getCode();
+  }
+
+  /**
+   * Return the cell type.
+   *
+   * @return the cell type
+   * Will be renamed to <code>getCellType()</code> when we make the CellType enum transition in POI 4.0. See bug 59791.
+   */
+  @Override
+  public CellType getCellTypeEnum() {
+    if(contentsSupplier.getContent() == null || type == null) {
+      return CellType.BLANK;
     } else if("n".equals(type)) {
-      return CELL_TYPE_NUMERIC;
+      return CellType.NUMERIC;
     } else if("s".equals(type) || "inlineStr".equals(type)) {
-      return CELL_TYPE_STRING;
+      return CellType.STRING;
     } else if("str".equals(type)) {
-      return CELL_TYPE_FORMULA;
+      return CellType.FORMULA;
     } else if("b".equals(type)) {
-      return CELL_TYPE_BOOLEAN;
+      return CellType.BOOLEAN;
     } else if("e".equals(type)) {
-      return CELL_TYPE_ERROR;
+      return CellType.ERROR;
     } else {
       throw new UnsupportedOperationException("Unsupported cell type '" + type + "'");
     }
@@ -158,7 +178,9 @@ public class StreamingCell implements Cell {
    */
   @Override
   public String getStringCellValue() {
-    return contents == null ? "" : (String) contents;
+    Object c = contentsSupplier.getContent();
+
+    return c == null ? "" : (String) c;
   }
 
   /**
@@ -183,7 +205,10 @@ public class StreamingCell implements Cell {
    */
   @Override
   public Date getDateCellValue() {
-    return rawContents == null ? null : HSSFDateUtil.getJavaDate(getNumericCellValue());
+    if(getCellType() == CELL_TYPE_STRING){
+      throw new IllegalStateException("Cell type cannot be CELL_TYPE_STRING");
+    }
+    return rawContents == null ? null : HSSFDateUtil.getJavaDate(getNumericCellValue(), use1904Dates);
   }
 
   /**
@@ -237,6 +262,56 @@ public class StreamingCell implements Cell {
     return this.cellStyle;
   }
 
+  /**
+   * Return a formula for the cell, for example, <code>SUM(C4:E4)</code>
+   *
+   * @return a formula for the cell
+   * @throws IllegalStateException if the cell type returned by {@link #getCellType()} is not CELL_TYPE_FORMULA
+   */
+  @Override
+  public String getCellFormula() {
+    if (type == null || !"str".equals(type))
+      throw new IllegalStateException("This cell does not have a formula");
+    return formula;
+  }
+
+  /**
+   * Only valid for formula cells
+   * @return one of ({@link #CELL_TYPE_NUMERIC}, {@link #CELL_TYPE_STRING},
+   *     {@link #CELL_TYPE_BOOLEAN}, {@link #CELL_TYPE_ERROR}) depending
+   * on the cached value of the formula
+   */
+  @Override
+  public int getCachedFormulaResultType() {
+    return getCachedFormulaResultTypeEnum().getCode();
+  }
+
+  /**
+   * Not supported
+   */
+  @Override
+  public CellType getCachedFormulaResultTypeEnum() {
+    if (type != null && "str".equals(type)) {
+      if(contentsSupplier.getContent() == null || cachedFormulaResultType == null) {
+        return CellType.BLANK;
+      } else if("n".equals(cachedFormulaResultType)) {
+        return CellType.NUMERIC;
+      } else if("s".equals(cachedFormulaResultType) || "inlineStr".equals(cachedFormulaResultType)) {
+        return CellType.STRING;
+      } else if("str".equals(cachedFormulaResultType)) {
+        return CellType.FORMULA;
+      } else if("b".equals(cachedFormulaResultType)) {
+        return CellType.BOOLEAN;
+      } else if("e".equals(cachedFormulaResultType)) {
+        return CellType.ERROR;
+      } else {
+        throw new UnsupportedOperationException("Unsupported cell type '" + cachedFormulaResultType + "'");
+      }
+    }
+    else  {
+      throw new IllegalStateException("Only formula cells have cached results");
+    }
+  }
 
   /* Not supported */
 
@@ -252,7 +327,7 @@ public class StreamingCell implements Cell {
    * Not supported
    */
   @Override
-  public Sheet getSheet() {
+  public void setCellType(CellType cellType) {
     throw new NotSupportedException();
   }
 
@@ -260,7 +335,7 @@ public class StreamingCell implements Cell {
    * Not supported
    */
   @Override
-  public int getCachedFormulaResultType() {
+  public Sheet getSheet() {
     throw new NotSupportedException();
   }
 
@@ -313,19 +388,28 @@ public class StreamingCell implements Cell {
   }
 
   /**
-   * Not supported
+   * Get the value of the cell as a XSSFRichTextString
+   * <p>
+   * For numeric cells we throw an exception. For blank cells we return an empty string.
+   * For formula cells we return the pre-calculated value if a string, otherwise an exception
+   * </p>
+   * @return the value of the cell as a XSSFRichTextString
    */
   @Override
-  public String getCellFormula() {
-    throw new NotSupportedException();
-  }
-
-  /**
-   * Not supported
-   */
-  @Override
-  public RichTextString getRichStringCellValue() {
-    throw new NotSupportedException();
+  public XSSFRichTextString getRichStringCellValue() {
+    CellType cellType = getCellTypeEnum();
+    XSSFRichTextString rt;
+    switch (cellType) {
+      case BLANK:
+        rt = new XSSFRichTextString("");
+        break;
+      case STRING:
+        rt = new XSSFRichTextString(getStringCellValue());
+        break;
+      default:
+        throw new NotSupportedException();
+    }
+    return rt;
   }
 
   /**
@@ -357,6 +441,14 @@ public class StreamingCell implements Cell {
    */
   @Override
   public void setAsActiveCell() {
+    throw new NotSupportedException();
+  }
+
+  /**
+   * Not supported
+   */
+  @Override
+  public CellAddress getAddress() {
     throw new NotSupportedException();
   }
 

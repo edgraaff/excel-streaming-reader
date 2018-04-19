@@ -1,14 +1,13 @@
 package com.monitorjbl.xlsx;
 
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.*;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.util.Iterator;
 import java.util.Locale;
 
 import static org.junit.Assert.assertEquals;
@@ -46,10 +45,10 @@ public class StreamingWorkbookTest {
   @Test
   public void testHiddenCells() throws Exception {
     try(
-        InputStream is = new FileInputStream(new File("src/test/resources/hidden_cells.xlsx"));
+        InputStream is = new FileInputStream(new File("src/test/resources/hidden.xlsx"));
         Workbook workbook = StreamingReader.builder().open(is)
     ) {
-      assertEquals(1, workbook.getNumberOfSheets());
+      assertEquals(3, workbook.getNumberOfSheets());
       Sheet sheet = workbook.getSheetAt(0);
 
       assertFalse("Column 0 should not be hidden", sheet.isColumnHidden(0));
@@ -59,6 +58,44 @@ public class StreamingWorkbookTest {
       assertFalse("Row 0 should not be hidden", sheet.rowIterator().next().getZeroHeight());
       assertTrue("Row 1 should be hidden", sheet.rowIterator().next().getZeroHeight());
       assertFalse("Row 2 should not be hidden", sheet.rowIterator().next().getZeroHeight());
+    }
+  }
+
+  @Test
+  public void testHiddenSheets() throws Exception {
+    try(
+        InputStream is = new FileInputStream(new File("src/test/resources/hidden.xlsx"));
+        Workbook workbook = StreamingReader.builder().open(is)
+    ) {
+      assertEquals(3, workbook.getNumberOfSheets());
+      assertFalse(workbook.isSheetHidden(0));
+
+      assertTrue(workbook.isSheetHidden(1));
+      assertFalse(workbook.isSheetVeryHidden(1));
+
+      assertFalse(workbook.isSheetHidden(2));
+      assertTrue(workbook.isSheetVeryHidden(2));
+    }
+  }
+
+  @Test
+  public void testFormulaCells() throws Exception {
+    try(
+        InputStream is = new FileInputStream(new File("src/test/resources/formula_cell.xlsx"));
+        Workbook workbook = StreamingReader.builder().open(is)
+    ) {
+      assertEquals(1, workbook.getNumberOfSheets());
+      Sheet sheet = workbook.getSheetAt(0);
+
+      Iterator<Row> rowIterator = sheet.rowIterator();
+      rowIterator.next();
+      rowIterator.next();
+      Row row3 = rowIterator.next();
+      Cell A3 = row3.getCell(0);
+
+      assertEquals("Cell A3 should be of type formula", CellType.FORMULA, A3.getCellTypeEnum());
+      assertEquals("Cell A3's value should be of type numeric", CellType.NUMERIC, A3.getCachedFormulaResultTypeEnum());
+      assertEquals("Wrong formula", "SUM(A1:A2)", A3.getCellFormula());
     }
   }
 }
